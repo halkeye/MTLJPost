@@ -130,10 +130,12 @@ use MT::Comment;
 use MT::PluginData;
 use MT::Permission;
 use MT::Trackback;
-use MT::Util qw(dirify encode_html);
+use MT::Util qw(dirify encode_html offset_time_list);
+use Time::Local qw(timelocal);
 use vars qw( $VERSION $ERRORMESSAGE);
 $VERSION = '1.9.2';
 $ERRORMESSAGE = undef;
+if (0)
 {
         # Trap ugly redefinition warnings
         local $SIG{__WARN__} = sub {  }; 
@@ -269,7 +271,11 @@ sub cb_MTLJPostEntrySave
    $t->param('COMMENTCOUNT', $entry->comment_count);
    $t->param('TRACKBACKCOUNT', $entry->trackback_count);
 
-   my $time_t = - ( $entry->modified_on - $entry->created_on );
+   #my $time_t = - ( $entry->modified_on - $entry->created_on );
+   my $date = $entry->created_on;
+   $date =~ /(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/;
+   my $time_t = timelocal($6, $5, $4, $3, $2-1, $1-1900) || die "error";
+#   $time_t = mktime(offset_time_list($time_t, $blog));
 
    my $event=();
 
