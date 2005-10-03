@@ -70,6 +70,7 @@
 #  - Updateing on trackbacks and %trackbackcount%
 # 1.9.2 - Sept 23, 2005
 #  - Fixed up rebuild all entries
+#  - Error messages are recorded internally
 #
 # Information about this plugin can be found at
 # http://www.halkeye.net/projects/index.cgi?project=1
@@ -85,8 +86,33 @@ package MT::Plugin::MTLJPost;
 use warnings;
 use strict;
 
-use lib qw(lib ../lib);
-use lib qw(extlib ../extlib);
+my ($MT_DIR, $PLUGIN_DIR, $PLUGIN_ENVELOPE);
+BEGIN {
+   eval {
+      require File::Basename; import File::Basename qw( dirname );
+      require File::Spec;
+
+      $MT_DIR = $ENV{PWD};
+      $MT_DIR ||= dirname($0)
+      if !$MT_DIR || !File::Spec->file_name_is_absolute($MT_DIR);
+      $MT_DIR = dirname($ENV{SCRIPT_FILENAME}) 
+      if ((!$MT_DIR || !File::Spec->file_name_is_absolute($MT_DIR)) 
+         && $ENV{SCRIPT_FILENAME});
+      unless ($MT_DIR && File::Spec->file_name_is_absolute($MT_DIR)) {
+         die "Plugin couldn't find own location";
+      }
+   }; if ($@) {
+      print "Content-type: text/html\n\n$@"; 
+      exit(0);
+   }
+
+   $PLUGIN_DIR = $MT_DIR;
+   ($MT_DIR, $PLUGIN_ENVELOPE) = $MT_DIR =~ m|(.*[\\/])(plugins[\\/].*)$|i;
+   $MT_DIR ||= $PLUGIN_DIR;
+
+   unshift @INC, $MT_DIR . 'lib';
+   unshift @INC, $MT_DIR . 'extlib';
+}
 
 use Digest::MD5 qw(md5_hex);
 use HTML::Template;
@@ -104,26 +130,47 @@ use MT::Comment;
 use MT::PluginData;
 use MT::Permission;
 use MT::Trackback;
-use MT::Util qw(dirify);
-
-
-use vars qw( $VERSION );
+use MT::Util qw(dirify encode_html);
+use vars qw( $VERSION $ERRORMESSAGE);
 $VERSION = '1.9.2';
+$ERRORMESSAGE = undef;
+{
+        # Trap ugly redefinition warnings
+        local $SIG{__WARN__} = sub {  }; 
+
+        my $mt_callback_error = \&MT::ErrorHandler::error;
+        *MT::ErrorHandler::error = sub {
+           my $msg = $_[1] || '';
+           $msg .= "\n" unless $msg =~ /\n$/;
+           $ERRORMESSAGE = $msg;
+           return $mt_callback_error(@_);
+        }
+}
  
 my $ljtag = eval { require MT::Plugins::MTLJTag; 1 } ? 1 : 0;
 
+my $plugin = undef;
 my $doc_link = "http://kodekoan.com/projects/mtplugins/MTLJPost/$VERSION/";
 # comment, category, template and author.
 eval{ require MT::Plugin };
 unless ($@) {
-	my $plugin = new MT::Plugin();
+   my $plugin_dir = "$MT_DIR/plugins/MTLJPost";
+	$plugin = new MT::Plugin();
 	$plugin->name("MTLJPost");
-	$plugin->config_link("../mt.cgi?__mode=mtljpost_configall");
 	$plugin->description("Duplicates Posts to livejournal. VERSION: $VERSION");
 	$plugin->doc_link($doc_link);
-   MT->add_plugin_action('blog', '../mt.cgi?__mode=mtljpost_cfg', 'Configure MTLJPost Login Information');
-   MT->add_plugin_action('blog', '../mt.cgi?__mode=mtljpost_categories', 'Configure MTLJPost Categories');
-   MT->add_plugin_action('blog', '../mt.cgi?__mode=mtljpost_post', 'Repost all entries to livejournal');
+   if (-e $plugin_dir && -d _ ) {
+      $plugin->config_link("../../mt.cgi?__mode=mtljpost_configall");
+      MT->add_plugin_action('blog', '../../mt.cgi?__mode=mtljpost_cfg', 'Configure MTLJPost Login Information');
+      MT->add_plugin_action('blog', '../../mt.cgi?__mode=mtljpost_categories', 'Configure MTLJPost Categories');
+      MT->add_plugin_action('blog', '../../mt.cgi?__mode=mtljpost_post', 'Repost all entries to livejournal');
+   }
+   else {
+      $plugin->config_link("../mt.cgi?__mode=mtljpost_configall");
+      MT->add_plugin_action('blog', '../mt.cgi?__mode=mtljpost_cfg', 'Configure MTLJPost Login Information');
+      MT->add_plugin_action('blog', '../mt.cgi?__mode=mtljpost_categories', 'Configure MTLJPost Categories');
+      MT->add_plugin_action('blog', '../mt.cgi?__mode=mtljpost_post', 'Repost all entries to livejournal');
+   }
 	MT->add_plugin($plugin);
    
    MT::App::CMS->add_methods(
@@ -131,6 +178,7 @@ unless ($@) {
       'mtljpost_cfg' => \&configure_blog_ljlogin,
       'mtljpost_manager' => \&lj_post_manage,
       'mtljpost_categories' => \&configure_blog_ljcategories,
+      'mtljpost_post' => \&ljpost_repost,
    );
 
    MT::Entry->add_callback( "post_save",   10, $plugin, \&cb_MTLJPostEntrySave );
@@ -642,9 +690,6 @@ sub configure_blog_ljcategories {
                   $pic->{'selected'} = 1 if ( $logindata->{categories}->{$dirlabel} eq $pic->{'htmlkeyword'});
                }
             }
-#            my $enabled = 'checked="checked"';
-#            $enabled = '' if (defined $logindata->{categories}->{"enabled_$dirlabel"} and not $logindata->{categories}->{"enabled_$dirlabel"});
-            #push @categories, {cat_enabled=>$enabled,id=>$obj->id, description=>$obj->description, label=>$obj->label, htmllabel=>$dirlabel, cat_pictures=>\@pictures};
             push @categories, {id=>$obj->id, description=>$obj->description, label=>$obj->label, htmllabel=>$dirlabel, cat_pictures=>\@pictures};
          }
          $param{'categories'} = \@categories;
@@ -714,4 +759,151 @@ ENDOFTEMPLATE
    $app->build_page(\$template,\%param);
 }
 
+sub ljpost_repost {
+   my $app = shift;
+   my %param = @_;
+   my $closestdin = 0;
+   my $blog = MT::Blog->load($app->{query}->param('blog_id')+0) || undef;
+   if (!$blog) {
+      $app->add_breadcrumb('LJ Post');
+      my $template = '<TMPL_INCLUDE NAME="header.tmpl"><div id="cfg-prefs"><p>Something went wrong, can not find that blog.</p></div><TMPL_INCLUDE NAME="footer.tmpl">';
+      $app->build_page(\$template,\%param);
+   }
+   if ($app->{query}->param("blog_id")) {
+      $app->add_breadcrumb($blog->name,'mt.cgi?__mode=menu&blog_id=' . $app->{query}->param("blog_id"));
+   }
+   $param{'mtljpost_version'} = $VERSION;
+
+   $app->add_breadcrumb('LJ Post - Reposting all entries');
+
+   my $template = <<ENDOFTEMPLATE;
+<TMPL_INCLUDE NAME="header.tmpl">
+<div id="cfg-prefs">
+ <TMPL_IF NAME=MESSAGE>
+  <p class="message"><TMPL_VAR NAME=MESSAGE></p>
+ </TMPL_IF>
+
+ <p>
+  <MT_TRANS phrase="Repost all entries." />
+ </p>
+
+ <p>
+  <MT_TRANS phrase="For more information, see the" /> <a href="$doc_link"><MT_TRANS phrase="documentation" /></a>.
+ </p>
+ENDOFTEMPLATE
+
+
+   # step 2 now, go and list categories with drop down boxes for each of the userpics.
+   if (defined $app->{query}->param('start') and $ENV{'REQUEST_METHOD'} eq 'POST') 
+   {
+      my %arg = ('sort' => 'created_on', direction => 'descend');
+      my $iter = MT::Entry->load_iter({ blog_id => $blog->id,
+            status => MT::Entry::RELEASE() },
+         \%arg);
+
+      my $msg = '';
+      if (my $pid = fork) {
+         # redirect to status page
+         my @entries =  ();
+         my $config = $plugin->get_config_value('resync');
+         $config->{complete} = 0;
+         $config->{entries} = \@entries;
+         $plugin->set_config_value('resync', $config);
+      }
+      elsif (defined $pid) {
+         close STDOUT;
+         my @entries =  ();
+         my $config = $plugin->get_config_value('resync');
+         $config->{complete} = 0;
+         $config->{entries} = \@entries;
+         $plugin->set_config_value('resync', $config);
+         foreach my $entry (MT::Entry->load({ blog_id => $blog->id })) {
+           eval { 
+               $entry->save(); 
+            };
+            my $errmsg = $@ ? $ERRORMESSAGE : undef;
+            push @entries, { id=>$entry->id, title=>$entry->title, status=>$@ ? "Fail" : "Success", errmsg=>$errmsg};
+            $config->{entries} = \@entries;
+            $plugin->set_config_value('resync', $config);
+         }
+         $config->{complete} = 1;
+         $plugin->set_config_value('resync', $config);
+         return;
+      }
+      $app->delete_param("start");
+      $template .= "[[[REFRESH STATUS PAGE]]]";
+      $closestdin = 1;
+      my %cgi_params = $app->param_hash;
+      $cgi_params{status} = 1;
+      $app->redirect($app->uri . "?" . (
+            join ";" , map { encode_html($_) . "=" . encode_html($cgi_params{$_}) } keys %cgi_params
+         )
+      );
+   }
+   elsif (defined $app->{query}->param('status')) 
+   {
+      my @entries;
+      my $complete = 0;
+      if (my $config = $plugin->get_config_value('resync')) {
+         @entries = @{$config->{entries}}  if ($config->{entries});
+         $complete = 1 if ($config->{complete});
+      }
+      $param{entries} = \@entries;
+      $template .= <<ENDOFTEMPLATE;
+      Complete:
+
+<TMPL_LOOP NAME=ENTRIES>
+  <div class="leftcol-full">
+      Posting Entry ID # <TMPL_VAR NAME=ID> - <TMPL_VAR NAME=TITLE> ... ...
+      <b><TMPL_VAR NAME=STATUS></b>
+      <TMPL_IF NAME=ERRMSG>
+        - <TMPL_VAR NAME=ERRMSG>
+      </TMPL_IF>
+   <br style="clear: both">
+  </div>
+</TMPL_LOOP>
+ENDOFTEMPLATE
+
+      if ($complete) {
+         $template .= "<b> All done</b>";
+      }
+      else {
+         $template .= <<ENDOFTEMPLATE;
+<script language="JavaScript">
+<!--
+var sURL = unescape(window.location.pathname);
+setTimeout( "refresh()", 2*1000 );
+function refresh() { window.location.href = sURL; }
+//-->
+</script>
+<script language="JavaScript1.1">
+<!--
+function refresh() { window.location.replace( sURL ); }
+//-->
+</script>
+<script language="JavaScript1.2">
+<!--
+function refresh() { window.location.reload(false); }
+//-->
+</script>
+ENDOFTEMPLATE
+   }
+
+
+   }
+   else {
+      $template .= <<ENDOFTEMPLATE;
+  <div class="leftcol-full">
+   <p>
+      This will take some time to do, are you sure you want to do this?
+      <form method="post" action="<TMPL_VAR NAME=SCRIPT_URL>" name="settings"><input type="hidden" name="magic_token" value="<TMPL_VAR NAME=MAGIC_TOKEN>" /> <input type="hidden" name="__mode" value="mtljpost_post"><input type="hidden" name="blog_id" value="<TMPL_VAR NAME=BLOG_ID>">
+        <input name="start" type="submit" value="<MT_TRANS phrase="Yes">" />
+      </form>
+      <br style="clear: both">
+  </div>
+ENDOFTEMPLATE
+   }
+   $template .= "</div>";
+   $app->build_page(\$template,\%param);
+}
 1;
