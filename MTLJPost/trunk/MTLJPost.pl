@@ -1,8 +1,8 @@
 # Title:        MT-LJPost
-# URL:          http://www.halkeye.net/projects/index.cgi?project=1 
+# URL:          http://kodekoan.com/projects/mtplugins/MTLJPost/1.9.2/
 # Summary:      A plugin for posting to livejournal whenever you post/edit an entry to MOveable Type
-# Author:       Gavin Mogan (halkeye@halkeye.net) (http://www.halkeye.net/)
-# Version:      1.9.1
+# Author:       Gavin Mogan (gavin@kodekoan.com) (http://www.kodekoan.com)
+# Version:      1.9.2
 #
 # History
 # 1.0.0 - January 29, 2004
@@ -132,23 +132,8 @@ use MT::Permission;
 use MT::Trackback;
 use MT::Util qw(dirify encode_html offset_time_list);
 use Time::Local qw(timelocal);
-use vars qw( $VERSION $ERRORMESSAGE);
+use vars qw( $VERSION);
 $VERSION = '1.9.2';
-$ERRORMESSAGE = undef;
-if (0)
-{
-        # Trap ugly redefinition warnings
-        local $SIG{__WARN__} = sub {  }; 
-
-        my $mt_callback_error = \&MT::ErrorHandler::error;
-        *MT::ErrorHandler::error = sub {
-           my $msg = $_[1] || '';
-           $msg .= "\n" unless $msg =~ /\n$/;
-           $ERRORMESSAGE = $msg;
-           return $mt_callback_error(@_);
-        }
-}
- 
 my $ljtag = eval { require MT::Plugins::MTLJTag; 1 } ? 1 : 0;
 
 my $plugin = undef;
@@ -271,11 +256,9 @@ sub cb_MTLJPostEntrySave
    $t->param('COMMENTCOUNT', $entry->comment_count);
    $t->param('TRACKBACKCOUNT', $entry->trackback_count);
 
-   #my $time_t = - ( $entry->modified_on - $entry->created_on );
    my $date = $entry->created_on;
    $date =~ /(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/;
    my $time_t = timelocal($6, $5, $4, $3, $2-1, $1-1900) || die "error";
-#   $time_t = mktime(offset_time_list($time_t, $blog));
 
    my $event=();
 
@@ -827,8 +810,7 @@ ENDOFTEMPLATE
            eval { 
                $entry->save(); 
             };
-            my $errmsg = $@ ? $ERRORMESSAGE : undef;
-            push @entries, { id=>$entry->id, title=>$entry->title, status=>$@ ? "Fail" : "Success", errmsg=>$errmsg};
+            push @entries, { id=>$entry->id, title=>$entry->title, status=>$@ ? "Fail" : "Success"};
             $config->{entries} = \@entries;
             $plugin->set_config_value('resync', $config);
          }
