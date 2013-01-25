@@ -1,8 +1,8 @@
 # Title:        MT-LJPost
-# URL:          http://kodekoan.com/projects/mtplugins/MTLJPost/1.9.2/
+# URL:          http://www.halkeye.net/projects/index.cgi?project=1 
 # Summary:      A plugin for posting to livejournal whenever you post/edit an entry to MOveable Type
-# Author:       Gavin Mogan (gavin@kodekoan.com) (http://www.kodekoan.com)
-# Version:      1.9.2
+# Author:       Gavin Mogan (halkeye@halkeye.net) (http://www.halkeye.net/)
+# Version:      1.9.3
 #
 # History
 # 1.0.0 - January 29, 2004
@@ -71,6 +71,8 @@
 # 1.9.2 - Sept 23, 2005
 #  - Fixed up rebuild all entries
 #  - Error messages are recorded internally
+# 1.9.3 - Oct 30, 2006
+#  - Fixed support for 3.3 (should work backwards too)
 #
 # Information about this plugin can be found at
 # http://www.halkeye.net/projects/index.cgi?project=1
@@ -133,11 +135,11 @@ use MT::Trackback;
 use MT::Util qw(dirify encode_html offset_time_list);
 use Time::Local qw(timelocal);
 use vars qw( $VERSION);
-$VERSION = '1.9.2';
+$VERSION = '1.9.3';
 my $ljtag = eval { require MT::Plugins::MTLJTag; 1 } ? 1 : 0;
 
 my $plugin = undef;
-my $doc_link = "http://kodekoan.com/projects/mtplugins/MTLJPost/$VERSION/";
+my $doc_link = "http://kodekoan.com/projects/mtplugins/MTLJPost/";
 # comment, category, template and author.
 eval{ require MT::Plugin };
 unless ($@) {
@@ -254,7 +256,13 @@ sub cb_MTLJPostEntrySave
    $t->param('BLOG_NAME', $blog->name);
    $t->param('PERMALINK', $entry->permalink);
    $t->param('COMMENTCOUNT', $entry->comment_count);
-   $t->param('TRACKBACKCOUNT', $entry->trackback_count);
+   if ($MT::VERSION > 3.2) {
+      $t->param('TRACKBACKCOUNT', $entry->ping_count);
+      $t->param('PINGCOUNT', $entry->ping_count);
+   }
+   else {
+      $t->param('TRACKBACKCOUNT', $entry->trackback_count);
+   }
 
    my $date = $entry->created_on;
    $date =~ /(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/;
